@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:reddit_client/main.dart';
+import 'package:reddit_client/widgets/infinite_scroll.dart';
 
 void main() {
   testWidgets('Counter increments smoke test', (WidgetTester tester) async {

@@ -2,9 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
+import 'package:reddit_client/models/post.dart';
+//import 'package:reddit_client/widgets/infinite_scroll.dart';
 
 // Entry point into the app
 void main() => runApp(RedditClient());
+//void main() => runApp(InfiniteScroll());
 
 // Main Widget
 class RedditClient extends StatelessWidget {
@@ -28,184 +31,128 @@ class RedditPosts extends StatefulWidget {
 
 // Widget for the main list of posts
 class RedditPostsState extends State<RedditPosts> {
+
   var _posts = List<Post>();
-  final Set<Post> _liked = new Set<Post>();
+  var _lastPostId;
   final _biggerFont = const TextStyle(fontSize: 18.0);
+  ScrollController _scrollController = new ScrollController();
+  bool isPerformingRequest = false;
+
 
   @override
   void initState() {
     super.initState();
-
     print('In initState()');
-
-    getPosts(null).then((result) {
-      print('In setState(), results: $result');
-      setState(() {
-        print('In setState().setState(), results: $result');
-        _posts = result;
-      });
-    }).catchError((err) {
-      print('Error getting posts: $err');
+    _scrollController.addListener(() {
+      print(_scrollController.position.pixels);
+      print(_scrollController.position.maxScrollExtent);
+      if (_posts.isNotEmpty && _scrollController.position.pixels == _scrollController.position.maxScrollExtent) {
+        _lastPostId = _posts[_posts.length - 1].postId;
+        print('Got last post id: $_lastPostId');
+        _getPosts(_lastPostId);
+      }
     });
   }
 
+
   @override
-  Widget build(BuildContext context) {
-    if(_posts == null || _posts.length == 0) {
-      print('if _posts == null');
-      return new Scaffold(
-        appBar: new AppBar(
-          title: new Text("Loading..."),
-        ),
-      );
-    } else {
-      print('else _posts == $_posts');
-      return Scaffold(
-        appBar: AppBar(
-          title: Text('/r/TodayILearned Posts'),
-          actions: <Widget>[
-            new IconButton(icon: const Icon(Icons.list), onPressed: _pushSaved),
-          ],
-        ),
-        // TODO: change back to _buildPostList() once http request data comes back async
-        body: _buildPostList(),
-      );
-    }
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
   }
 
-  Widget _buildPostList() {
+
+  @override
+  Widget build(BuildContext context) {
+
+    var futureBuilder = new FutureBuilder(
+      future: _makeRequest(null),
+      builder: (BuildContext context, AsyncSnapshot snapshot) {
+        print(snapshot);
+        switch (snapshot.connectionState) {
+          case ConnectionState.none:
+          case ConnectionState.waiting:
+            print("LOADING");
+            return new Text('loading...');
+          default:
+            if (snapshot.hasError) {
+              print("ERROR::");
+              return new Text('Error: ${snapshot.error}');
+            }
+            else {
+              print("Building inital post list");
+              _posts.addAll(snapshot.data);
+              return _buildPostList(context, snapshot);
+            }
+        }
+      },
+    );
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('/r/TodayILearned Posts'),
+      ),
+      body: futureBuilder,
+    );
+  }
+
+
+  Widget _buildPostList(BuildContext context, AsyncSnapshot snapshot) {
+    List<Post> newPosts = snapshot.data;
     return ListView.builder(
         padding: const EdgeInsets.all(16.0),
-        // The itemBuilder callback is called once per suggested word pairing,
-        // and places each suggestion into a ListTile row.
-        // For even rows, the function adds a ListTile row for the word pairing.
-        // For odd rows, the function adds a Divider widget to visually
-        // separate the entries. Note that the divider may be difficult
-        // to see on smaller devices.
+        itemCount: newPosts.length,
         itemBuilder: (context, i) {
-          // Add a one-pixel-high divider widget before each row in theListView.
-          if (i.isOdd) return Divider();
-
-          // The syntax "i ~/ 2" divides i by 2 and returns an integer result.
-          // For example: 1, 2, 3, 4, 5 becomes 0, 1, 1, 2, 2.
-          // This calculates the actual number of word pairings in the ListView,
-          // minus the divider widgets.
-          final index = i ~/ 2;
-          // If you've reached the end of the available word pairings...
-          if (index >= _posts.length) {
-            // ...then generate 10 more and add them to the suggestions list.
-
-            // TODO: figure out how to get this working async
-            List<Post> newPosts;
-            getPosts('').then((result) {
-              print('Got next page of results...');
-              _posts.addAll(newPosts);
-            });
-
-          }
-          print('In _buildPostList(), index: $index');
-          return _buildRow(_posts[index]);
-          //return null;
-        }
+          return _buildRow(newPosts[i]);
+        },
+      controller: _scrollController,
     );
   }
 
   Widget _buildRow(Post post) {
-    final bool alreadySaved = _liked.contains(post);
-
     return ListTile(
       leading: Image.network(post.imageUrl),
       title: Text(
         post.title,
         style: _biggerFont,
-      ),
-      trailing: new Icon(   // Add the lines from here...
-        alreadySaved ? Icons.check_box : Icons.check_box_outline_blank,
-        color: alreadySaved ? Colors.red : null,
-      ),
-      onTap: () {
-        setState(() {
-          if (alreadySaved) {
-            _liked.remove(post);
-          } else {
-            _liked.add(post);
-          }
-        });
-      },
+      )
     );
   }
 
-  void _pushSaved() {
-    Navigator.of(context).push(
-      new MaterialPageRoute<void>(
-        builder: (BuildContext context) {
-          final Iterable<ListTile> tiles = _liked.map(
-                (Post post) {
-              return new ListTile(
-                title: new Text(
-                  post.title,
-                  style: _biggerFont,
-                ),
-              );
-            },
-          );
-          final List<Widget> divided = ListTile
-              .divideTiles(
-            context: context,
-            tiles: tiles,
-          )
-              .toList();
-          return new Scaffold(
-            appBar: new AppBar(
-              title: const Text('Saved Posts'),
-            ),
-            body: new ListView(children: divided),
-          );
-        },
-      ),
-    );
-  }
+  _getPosts(var lastPostId) async {
+    print("isPerformingRequest:$isPerformingRequest, params:$lastPostId");
+    if (!isPerformingRequest) {
+      setState(() => isPerformingRequest = true);
 
-  Future<List<Post>> getPosts(var lastPostId) async {
-    List<Post> posts = new List<Post>();
-
-    var url = "https://www.reddit.com/r/todayilearned.json";
-    if(lastPostId != null) {
-      url += '?$lastPostId';
+      List<Post> newPosts = await _makeRequest(lastPostId);
+      print("Got response data, setting state...");
+      print(newPosts[0].postId);
+      setState(() {
+        _posts.addAll(newPosts);
+        print(_posts.length);
+        isPerformingRequest = false;
+      });
     }
+  }
+
+  Future<List<Post>> _makeRequest(var postId) async {
+    List<Post> posts = new List<Post>();
+    var url = "https://www.reddit.com/r/todayilearned.json";
+    if(postId != null) {
+      url += '?$postId';
+    }
+    print("Making request to $url");
     await http.get(url).then((res) async {
       Map decoded = json.decode(res.body);
 
       var data = decoded['data'];
       for (var post in data['children']) {
-        Post rPost = new Post(post['data']['name'],post['data']['title'],post['data']['thumbnail']);
+        Post rPost = new Post(post['data']['name'], post['data']['title'],
+            post['data']['thumbnail']);
         posts.add(rPost);
       }
-      print('posts: $posts');
-
     });
-
+    print('makeRequest():posts:');
     return posts;
   }
-}
-
-
-class Post {
-  final String title;
-  final String imageUrl;
-  final String postId;
-
-  Post(this.postId, this.title, this.imageUrl) {
-    if (postId == null || title == null) {
-      throw new ArgumentError("PostId and Tile cannot be null. "
-          "Received: '$postId', '$title', '$imageUrl'");
-    }
-    if (postId.isEmpty || title.isEmpty) {
-      throw new ArgumentError("PostId and Title cannot be empty. "
-          "Received: '$postId', '$title', '$imageUrl'");
-    }
-  }
-
-  @override
-  String toString() => '$title$imageUrl$postId';
 }
